@@ -1,0 +1,321 @@
+{
+  "uid": "movie-analytics",
+  "title": "Online Cinema Analytics",
+  "description": "Ежедневные метрики онлайн-кинотеатра в UTC.",
+  "schemaVersion": 40,
+  "version": 1,
+  "timezone": "utc",
+  "refresh": "30s",
+  "time": {
+    "from": "now-14d/d",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Retention Cohort Heatmap",
+      "description": "Когорты по дате первого просмотра. Прочерк обозначает ещё не завершившийся день UTC.",
+      "type": "table",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "movie-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 13
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "movie-clickhouse"
+          },
+          "editorType": "sql",
+          "queryType": "table",
+          "format": 1,
+          "pluginVersion": "4.15.0",
+          "rawSql": "SELECT toString(metric_date) AS \"Когорта UTC\",\n    maxIf(value, dimension = '0') AS \"Day 0\",\n    maxIf(value, dimension = '1') AS \"Day 1\",\n    maxIf(value, dimension = '2') AS \"Day 2\",\n    maxIf(value, dimension = '3') AS \"Day 3\",\n    maxIf(value, dimension = '4') AS \"Day 4\",\n    maxIf(value, dimension = '5') AS \"Day 5\",\n    maxIf(value, dimension = '6') AS \"Day 6\",\n    maxIf(value, dimension = '7') AS \"Day 7\"\nFROM default.daily_metrics\nWHERE metric = 'cohort_retention' AND $__dateFilter(metric_date)\nGROUP BY metric_date\nHAVING isNotNull(maxIf(value, dimension = '0'))\nORDER BY metric_date DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 0,
+          "noValue": "—",
+          "custom": {
+            "cellOptions": {
+              "type": "color-background",
+              "mode": "basic"
+            },
+            "align": "center"
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#2b203f",
+                "value": null
+              },
+              {
+                "color": "#3b2c61",
+                "value": 0.01
+              },
+              {
+                "color": "#42358d",
+                "value": 0.2
+              },
+              {
+                "color": "#3547ae",
+                "value": 0.4
+              },
+              {
+                "color": "#205bad",
+                "value": 0.6
+              },
+              {
+                "color": "#006778",
+                "value": 0.8
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Когорта UTC"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "auto"
+                }
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 155
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 2,
+      "title": "DAU",
+      "description": "Уникальные активные пользователи за день.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "movie-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "movie-clickhouse"
+          },
+          "editorType": "sql",
+          "queryType": "timeseries",
+          "format": 0,
+          "pluginVersion": "4.15.0",
+          "rawSql": "SELECT toDateTime(metric_date, 'UTC') AS time, value AS \"Пользователи\"\nFROM default.daily_metrics\nWHERE metric = 'dau' AND $__dateFilter(metric_date)\nORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#8a7cf4"
+          },
+          "custom": {
+            "fillOpacity": 16,
+            "lineWidth": 2,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Конверсия просмотра",
+      "description": "Доля завершений от стартов за один день.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "movie-clickhouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "movie-clickhouse"
+          },
+          "editorType": "sql",
+          "queryType": "timeseries",
+          "format": 0,
+          "pluginVersion": "4.15.0",
+          "rawSql": "SELECT toDateTime(metric_date, 'UTC') AS time, value AS \"Конверсия\"\nFROM default.daily_metrics\nWHERE metric = 'conversion' AND $__dateFilter(metric_date)\nORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#46b4b3"
+          },
+          "custom": {
+            "fillOpacity": 16,
+            "lineWidth": 2,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Среднее время просмотра",
+      "description": "Средний прогресс завершённых просмотров.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "movie-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "movie-clickhouse"
+          },
+          "editorType": "sql",
+          "queryType": "timeseries",
+          "format": 0,
+          "pluginVersion": "4.15.0",
+          "rawSql": "SELECT toDateTime(metric_date, 'UTC') AS time, value AS \"Длительность\"\nFROM default.daily_metrics\nWHERE metric = 'avg_watch_seconds' AND $__dateFilter(metric_date)\nORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#dba062"
+          },
+          "custom": {
+            "fillOpacity": 16,
+            "lineWidth": 2,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Топ фильмов за последний день",
+      "description": "Количество начатых просмотров за последнюю дату с просмотрами в выбранном интервале.",
+      "type": "table",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "movie-clickhouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "movie-clickhouse"
+          },
+          "editorType": "sql",
+          "queryType": "table",
+          "format": 1,
+          "pluginVersion": "4.15.0",
+          "rawSql": "SELECT dimension AS \"Фильм\", toUInt64(value) AS \"Просмотры\"\nFROM default.daily_metrics\nWHERE metric = 'movie_views'\n  AND metric_date = (SELECT max(metric_date) FROM default.daily_metrics WHERE metric = 'movie_views' AND $__dateFilter(metric_date))\nORDER BY value DESC, dimension ASC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    }
+  ]
+}

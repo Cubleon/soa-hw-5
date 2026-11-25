@@ -1,0 +1,241 @@
+name: movie-analytics
+
+x-kafka: &kafka
+  image: confluentinc/cp-kafka:7.9.2
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "cub", "kafka-ready", "-b", "localhost:9092", "1", "6"]
+    interval: 15s
+    timeout: 12s
+    start_period: 30s
+    retries: 12
+
+x-kafka-env: &kafka-env
+  CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+  KAFKA_PROCESS_ROLES: broker,controller
+  KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+  KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+  KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+  KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+  KAFKA_LOG_DIRS: /var/lib/kafka/data
+  KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+  KAFKA_HEAP_OPTS: "-Xms256M -Xmx512M"
+
+x-app: &app
+  build: .
+  image: movie-analytics-app:hw5
+  pull_policy: build
+
+x-kafka-client: &kafka-client
+  KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+  SCHEMA_REGISTRY_URL: http://schema-registry:8081
+
+x-stores: &stores
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_USER: analytics
+  CLICKHOUSE_PASSWORD: analytics-local
+  POSTGRES_DSN: postgresql://analytics:analytics-local@postgres:5432/analytics
+  S3_ENDPOINT_URL: http://object-store:8333
+  S3_ACCESS_KEY: analytics
+  S3_SECRET_KEY: analytics-local
+
+services:
+  kafka-1:
+    <<: *kafka
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 1
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-1:9092
+    volumes:
+      - kafka-1-data:/var/lib/kafka/data
+
+  kafka-2:
+    <<: *kafka
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 2
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-2:9092
+    volumes:
+      - kafka-2-data:/var/lib/kafka/data
+
+  kafka-3:
+    <<: *kafka
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 3
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-3:9092
+    volumes:
+      - kafka-3-data:/var/lib/kafka/data
+
+  schema-registry:
+    image: ghcr.io/aiven-open/karapace:6.2.4
+    command: ["python3", "-m", "karapace"]
+    restart: unless-stopped
+    depends_on:
+      kafka-1: {condition: service_healthy}
+      kafka-2: {condition: service_healthy}
+      kafka-3: {condition: service_healthy}
+    environment:
+      KARAPACE_KARAPACE_REGISTRY: "true"
+      KARAPACE_KARAPACE_REST: "false"
+      KARAPACE_HOST: 0.0.0.0
+      KARAPACE_PORT: 8081
+      KARAPACE_ADVERTISED_HOSTNAME: schema-registry
+      KARAPACE_BOOTSTRAP_URI: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      KARAPACE_REPLICATION_FACTOR: 3
+    ports:
+      - "127.0.0.1:8081:8081"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "from urllib.request import urlopen; urlopen('http://localhost:8081/subjects', timeout=4)"]
+      interval: 5s
+      timeout: 5s
+      start_period: 15s
+      retries: 24
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8.4.13
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: analytics
+      CLICKHOUSE_PASSWORD: analytics-local
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "127.0.0.1:8123:8123"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse/config.d/kafka.xml:/etc/clickhouse-server/config.d/kafka.xml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user $${CLICKHOUSE_USER} --password $${CLICKHOUSE_PASSWORD} -q 'SELECT 1'"]
+      interval: 5s
+      timeout: 4s
+      retries: 24
+
+  postgres:
+    image: postgres:17.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: analytics
+      POSTGRES_USER: analytics
+      POSTGRES_PASSWORD: analytics-local
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 4s
+      retries: 24
+
+  object-store:
+    image: chrislusf/seaweedfs:4.17
+    command: mini -dir=/data
+    restart: unless-stopped
+    environment:
+      AWS_ACCESS_KEY_ID: analytics
+      AWS_SECRET_ACCESS_KEY: analytics-local
+    ports:
+      - "127.0.0.1:8333:8333"
+    volumes:
+      - s3-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8333/healthz"]
+      interval: 5s
+      timeout: 4s
+      retries: 24
+
+  bootstrap:
+    <<: *app
+    command: python -m app.bootstrap
+    environment:
+      <<: [*kafka-client, *stores]
+    depends_on:
+      schema-registry: {condition: service_healthy}
+      clickhouse: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+      object-store: {condition: service_healthy}
+
+  producer:
+    <<: *app
+    command: uvicorn app.producer:api --host 0.0.0.0 --port 8000
+    restart: unless-stopped
+    environment:
+      <<: *kafka-client
+      GENERATOR_ENABLED: "${GENERATOR_ENABLED:-true}"
+      GENERATOR_INTERVAL_SECONDS: "${GENERATOR_INTERVAL_SECONDS:-6}"
+      GENERATOR_HISTORY_DAYS: "${GENERATOR_HISTORY_DAYS:-14}"
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://localhost:8000/health', timeout=4)"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+
+  aggregation:
+    <<: *app
+    command: uvicorn app.aggregation:api --host 0.0.0.0 --port 8001
+    restart: unless-stopped
+    environment:
+      <<: *stores
+      AGGREGATION_INTERVAL_SECONDS: "${AGGREGATION_INTERVAL_SECONDS:-30}"
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+    ports:
+      - "127.0.0.1:8002:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://localhost:8001/health', timeout=4)"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+
+  grafana:
+    image: grafana/grafana:11.6.11
+    restart: unless-stopped
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: cinema-local
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource 4.15.0
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 24
+
+  integration:
+    <<: *app
+    profiles: [test]
+    command: python -m unittest discover -s tests -v
+    environment:
+      <<: [*kafka-client, *stores]
+      PRODUCER_URL: http://producer:8000
+      AGGREGATION_URL: http://aggregation:8001
+      GRAFANA_URL: http://grafana:3000
+    depends_on:
+      producer: {condition: service_healthy}
+      aggregation: {condition: service_healthy}
+      grafana: {condition: service_healthy}
+
+volumes:
+  kafka-1-data:
+  kafka-2-data:
+  kafka-3-data:
+  clickhouse-data:
+  postgres-data:
+  s3-data:
+  grafana-data:
